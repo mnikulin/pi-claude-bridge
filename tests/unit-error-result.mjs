@@ -155,6 +155,32 @@ describe("error results", () => {
 		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
 	});
 
+	// A stalled stream whose non-streaming retry also fails: the synthetic failure
+	// report arrives while the dead stream's partial blocks (unsigned thinking, a tool
+	// call CC will never dispatch) are still open. The report must drop them the same
+	// way the fallback path does — convertPiMessages would otherwise replay the
+	// abandoned tool call as one awaiting a result.
+	it("synthetic report after a stalled stream drops the abandoned partial blocks", async () => {
+		const c = makeCtx();
+		// A stream that reached a thinking block and the start of a tool call, then stalled.
+		const stalledStream = (id) => [
+			{ type: "stream_event", event: { type: "message_start", message: { id } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Let me look" } } },
+			{ type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "tool_use", name: "mcp__custom-tools__bash", id: "toolu_dead", input: {} } } },
+			{ type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"comm" } } },
+		];
+		await consume(c, [
+			...stalledStream("msg_stalled"),
+			{ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: errorResult.result }] } },
+			errorResult,
+		]);
+
+		assert.deepStrictEqual(c.turnOutput.content, [{ type: "text", text: errorResult.result }]);
+		assert.strictEqual(c.turnSawToolCall, false);
+		assert.strictEqual(c.turnStreamOpen, false);
+	});
+
 	it("still streams and finalizes a successful result normally", async () => {
 		const c = makeCtx();
 		await consume(c, [{ type: "result", subtype: "success", is_error: false, result: "done" }]);
