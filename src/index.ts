@@ -126,19 +126,22 @@ function resolveClaudeCodeExecutable(provider: Config["provider"] = {}): string 
 
 	const host = ssh.host;
 	const port = ssh.port == null ? undefined : String(ssh.port);
-	const cwd = ssh.cwd ?? process.cwd();
+	const cwd = ssh.cwd ?? (process.platform === "win32" ? undefined : process.cwd());
+	if (!cwd) {
+		throw new Error("provider.claudeCodeSsh.cwd is required on Windows because the remote Claude Code process needs a POSIX working directory.");
+	}
 	const executable = ssh.executable ?? "claude";
 	const remoteEnv = { ...ssh.env, ...CC_CHILD_ENV };
-	const cacheKey = JSON.stringify({ host, port, cwd, executable, remoteEnv });
+	const cacheKey = JSON.stringify({ host, port, cwd, executable, remoteEnv, platform: process.platform });
 	if (claudeCodeSshWrapperPath && claudeCodeSshWrapperCacheKey === cacheKey) return claudeCodeSshWrapperPath;
 
 	const wrapperDir = join(dirname(globalConfigPath()), "claude-bridge");
 	mkdirSync(wrapperDir, { recursive: true });
 	const wrapperPath = join(wrapperDir, "claude-code-ssh-wrapper.mjs");
 	const source = `#!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join as localJoin, posix } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 const host = ${JSON.stringify(host)};
@@ -166,22 +169,21 @@ function resumeSessionId(args) {
 const forwardedArgs = process.argv.slice(2);
 const sessionId = resumeSessionId(forwardedArgs);
 if (sessionId && cwd) {
-	const localClaudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+	const localClaudeDir = process.env.CLAUDE_CONFIG_DIR || localJoin(homedir(), ".claude");
 	const projectKey = claudeProjectKey(cwd);
-	const localSession = join(localClaudeDir, "projects", projectKey, sessionId + ".jsonl");
+	const localSession = localJoin(localClaudeDir, "projects", projectKey, sessionId + ".jsonl");
 	const remoteClaudeDir = remoteEnv.CLAUDE_CONFIG_DIR || ".claude";
 	const remoteBase = remoteClaudeDir.replace(/^~\\//, "");
-	const remoteDir = remoteBase.startsWith("/") ? join(remoteBase, "projects", projectKey) : remoteBase + "/projects/" + projectKey;
-	const remoteSession = remoteDir + "/" + sessionId + ".jsonl";
+	const remoteDir = posix.join(remoteBase, "projects", projectKey);
+	const remoteSession = posix.join(remoteDir, sessionId + ".jsonl");
 	if (existsSync(localSession)) {
 		const sshBase = [...(port ? ["-p", port] : []), host];
-		const mkdir = spawnSync("ssh", ["-T", ...sshBase, "mkdir -p " + shellQuote(remoteDir)], { stdio: "inherit" });
-		if (mkdir.status === 0) {
-			const scp = spawnSync("scp", [...(port ? ["-P", port] : []), localSession, host + ":" + remoteSession], { stdio: "inherit" });
-			if (scp.status !== 0) process.exit(scp.status ?? 1);
-		} else {
-			process.exit(mkdir.status ?? 1);
-		}
+		const upload = spawnSync(
+			"ssh",
+			["-T", ...sshBase, "mkdir -p " + shellQuote(remoteDir) + " && cat > " + shellQuote(remoteSession)],
+			{ input: readFileSync(localSession), stdio: ["pipe", "inherit", "inherit"] },
+		);
+		if (upload.status !== 0) process.exit(upload.status ?? 1);
 	}
 }
 
@@ -206,10 +208,16 @@ child.on("error", (error) => {
 `;
 	writeFileSync(wrapperPath, source);
 	chmodSync(wrapperPath, 0o755);
+	const executableWrapperPath = process.platform === "win32"
+		? join(wrapperDir, "claude-code-ssh-wrapper.cmd")
+		: wrapperPath;
+	if (process.platform === "win32") {
+		writeFileSync(executableWrapperPath, "@echo off\r\nnode \"%~dp0claude-code-ssh-wrapper.mjs\" %*\r\n");
+	}
 	claudeCodeSshWrapperCacheKey = cacheKey;
-	claudeCodeSshWrapperPath = wrapperPath;
-	debug(`claude-code-ssh: wrapper=${wrapperPath} host=${host}${port ? ` port=${port}` : ""}${cwd ? ` cwd=${cwd}` : ""} executable=${executable}`);
-	return wrapperPath;
+	claudeCodeSshWrapperPath = executableWrapperPath;
+	debug(`claude-code-ssh: wrapper=${executableWrapperPath} host=${host}${port ? ` port=${port}` : ""} cwd=${cwd} executable=${executable}`);
+	return executableWrapperPath;
 }
 
 function claudeSessionCwd(provider: Config["provider"], localCwd: string): string {
