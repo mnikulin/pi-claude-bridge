@@ -5,7 +5,7 @@ import { query, type EffortLevel, type SDKMessage, type SettingSource } from "@a
 import type { Base64ImageSource, ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { Text } from "@earendil-works/pi-tui";
 import { createSession, deleteSession, openSession, repairToolPairing } from "cc-session-io";
-import { appendFileSync, mkdirSync, realpathSync, statSync } from "fs";
+import { appendFileSync, chmodSync, mkdirSync, realpathSync, statSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { PROVIDER_ID, messageContentToText, convertPiMessages } from "./convert.js";
 import { DEBUG_LOG_PATH, DIAG_LOG_PATH } from "./log-paths.js";
@@ -15,7 +15,7 @@ import { verifyWrittenSession as _verifyWrittenSession } from "./session-verify.
 import { extractAllToolResults as _extractAllToolResults, type McpResult } from "./extract-tool-results.js";
 import { QueryContext, ctx } from "./query-state.js";
 import { makePromptStream, userMessage, type PromptStream } from "./prompt-stream.js";
-import { claudeCodeSettings, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
+import { claudeCodeSettings, globalConfigPath, loadConfig, markStartupNoticeShown, type Config } from "./config.js";
 import {
 	collectPromptSkills,
 	projectPromptCapture,
@@ -115,6 +115,64 @@ function makeCliDebugOptions(tag: string): { debug?: boolean; debugFile?: string
 			}
 		},
 	};
+}
+
+let claudeCodeSshWrapperCacheKey: string | undefined;
+let claudeCodeSshWrapperPath: string | undefined;
+
+function resolveClaudeCodeExecutable(provider: Config["provider"] = {}): string | undefined {
+	const ssh = provider.claudeCodeSsh;
+	if (!ssh?.host) return provider.pathToClaudeCodeExecutable;
+
+	const host = ssh.host;
+	const port = ssh.port == null ? undefined : String(ssh.port);
+	const cwd = ssh.cwd;
+	const executable = ssh.executable ?? "claude";
+	const remoteEnv = { ...ssh.env, ...CC_CHILD_ENV };
+	const cacheKey = JSON.stringify({ host, port, cwd, executable, remoteEnv });
+	if (claudeCodeSshWrapperPath && claudeCodeSshWrapperCacheKey === cacheKey) return claudeCodeSshWrapperPath;
+
+	const wrapperDir = join(dirname(globalConfigPath()), "claude-bridge");
+	mkdirSync(wrapperDir, { recursive: true });
+	const wrapperPath = join(wrapperDir, "claude-code-ssh-wrapper.mjs");
+	const source = `#!/usr/bin/env node
+import { spawn } from "node:child_process";
+
+const host = ${JSON.stringify(host)};
+const port = ${JSON.stringify(port)};
+const cwd = ${JSON.stringify(cwd)};
+const executable = ${JSON.stringify(executable)};
+const remoteEnv = ${JSON.stringify(remoteEnv)};
+
+function shellQuote(value) {
+	return "'" + String(value).replace(/'/g, "'\\\\''") + "'";
+}
+
+const remoteParts = [];
+if (cwd) remoteParts.push("cd", shellQuote(cwd), "&&");
+remoteParts.push("exec", "env");
+for (const [key, value] of Object.entries(remoteEnv)) {
+	if (value !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) remoteParts.push(key + "=" + shellQuote(value));
+}
+remoteParts.push(shellQuote(executable), ...process.argv.slice(2).map(shellQuote));
+
+const sshArgs = ["-T", ...(port ? ["-p", port] : []), host, remoteParts.join(" ")];
+const child = spawn("ssh", sshArgs, { stdio: "inherit" });
+child.on("exit", (code, signal) => {
+	if (signal) process.kill(process.pid, signal);
+	else process.exit(code ?? 1);
+});
+child.on("error", (error) => {
+	console.error(error?.stack || String(error));
+	process.exit(1);
+});
+`;
+	writeFileSync(wrapperPath, source);
+	chmodSync(wrapperPath, 0o755);
+	claudeCodeSshWrapperCacheKey = cacheKey;
+	claudeCodeSshWrapperPath = wrapperPath;
+	debug(`claude-code-ssh: wrapper=${wrapperPath} host=${host}${port ? ` port=${port}` : ""}${cwd ? ` cwd=${cwd}` : ""} executable=${executable}`);
+	return wrapperPath;
 }
 
 /** Unconditional diagnostic dump — for "should never happen" paths. Creates pi's agent
@@ -575,7 +633,7 @@ async function runIsolatedSummary(
 		if (!promptText) throw new Error("runIsolatedSummary: one-off summary without a user prompt (last message is not user?)");
 		const cwd = process.cwd();
 		const compactProviderSettings = loadConfig(cwd).provider;
-		const claudeExecutable = compactProviderSettings?.pathToClaudeCodeExecutable;
+		const claudeExecutable = resolveClaudeCodeExecutable(compactProviderSettings);
 		const cliModel = claudeCodeModelId(model, longContextSettings);
 		debug(`compact summary: spawn model=${cliModel} registeredModel=${model.id} promptLen=${promptText.length}`);
 
@@ -1376,10 +1434,6 @@ function processAssistantMessage(message: SDKMessage, model: Model<any>, customT
 	// but emit no events, so the turn still reads as a call that produced no output.
 	// Issue #162.
 	if (assistantMsg.model === "<synthetic>") {
-		// The report can follow a stalled stream whose non-streaming retry also failed;
-		// drop the abandoned partial blocks (unsigned thinking, a tool call CC will never
-		// dispatch) the way the fallback path below would.
-		if (c.turnSawStreamEvent && c.turnStreamOpen) dropAbandonedStreamBlocks(c, "synthetic failure report");
 		debug(`processAssistantMessage: <synthetic> message, keeping ${assistantMsg.content.length} block(s) off the stream`);
 		for (const block of assistantMsg.content) {
 			if (block.type === "text" && block.text) c.turnBlocks.push({ type: "text", text: block.text });
@@ -1956,7 +2010,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	// programmatically and ignore filesystem MCP entries — applied unconditionally because
 	// settingSources is left at CC's default, which loads all sources.
 	const strictMcpConfigEnabled = providerSettings.strictMcpConfig !== false;
-	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+	const claudeExecutable = resolveClaudeCodeExecutable(providerSettings);
 
 	// Prefer the model's own thinkingLevelMap (per-model overrides — e.g. a map can
 	// route xhigh→xhigh where the generic table maps xhigh→max). pi-ai's catalog
@@ -2241,7 +2295,7 @@ async function promptAndWait(
 	const effort = options?.thinking && options.thinking !== "off"
 		? REASONING_TO_EFFORT[options.thinking] : undefined;
 
-	const claudeExecutable = providerSettings.pathToClaudeCodeExecutable;
+	const claudeExecutable = resolveClaudeCodeExecutable(providerSettings);
 
 	const extraArgs: Record<string, string | null> = {
 		"strict-mcp-config": null,
@@ -2379,6 +2433,10 @@ export default function (pi: ExtensionAPI) {
 	const config = loadConfig(process.cwd());
 	debug("loadConfig:", JSON.stringify(config));
 	providerSettings = config.provider ?? {};
+	// Generate/update the SSH wrapper as soon as the extension loads, including
+	// resumed sessions. Query paths still call the resolver so a later /reload
+	// with changed config gets the same treatment.
+	resolveClaudeCodeExecutable(providerSettings);
 	// We need these settings to know if we're eligible for 1M context on certain models
 	// Validate at the boundary: a non-array here would throw inside every
 	// claudeCodeModelId call and brick the extension at activation.

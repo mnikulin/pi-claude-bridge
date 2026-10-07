@@ -18,7 +18,7 @@ Pi extension that integrates Claude Code via the [Agent SDK](https://github.com/
 ## Install
 
 ```
-pi install npm:pi-claude-bridge
+pi install git:github.com/mnikulin/pi-claude-bridge@main
 ```
 
 Requires pi 0.86.1 or newer.
@@ -68,7 +68,13 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
     "plan": "max",
     "longContextExtraUsage": false,
     "strictMcpConfig": true,
-    "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude"
+    "pathToClaudeCodeExecutable": "/home/you/.nix-profile/bin/claude",
+    "claudeCodeSsh": {
+      "host": "vps",
+      "port": 2222,
+      "cwd": "/home/you/project",
+      "executable": "/path/to/claude"
+    }
   }
 }
 ```
@@ -90,6 +96,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
+- `claudeCodeSsh` — run the Claude Code CLI over SSH while keeping pi local, so Claude API traffic originates from the remote host. Set `host` (required), optional `port`, optional remote `cwd`, optional remote `executable` (default `"claude"`), and optional `env` object for extra remote environment variables. When set, this takes precedence over `pathToClaudeCodeExecutable`.
 
 
 **Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.

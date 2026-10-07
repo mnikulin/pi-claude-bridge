@@ -26,6 +26,14 @@ export interface Config {
 		strictMcpConfig?: boolean;
 		autoMemoryEnabled?: boolean;
 		pathToClaudeCodeExecutable?: string;
+		/** Run the Claude Code CLI over SSH while keeping pi itself local. */
+		claudeCodeSsh?: {
+			host?: string;
+			port?: string | number;
+			cwd?: string;
+			executable?: string;
+			env?: Record<string, string | number | boolean>;
+		};
 		// Subscription plan tier. Setting to "max" enables Opus 4.6 at 1M context
 		plan?: "pro" | "max";
 		// Set to true to opt into metered 1M context usage ("extra usage" in

@@ -2,7 +2,9 @@
 
 ## UNRELEASED
 
-- **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event. A notice following a stalled stream also drops the dead stream's abandoned partial blocks.
+- **Add: run Claude Code over SSH** — `provider.claudeCodeSsh` keeps pi local while starting the Claude Code CLI on a remote host, so Claude API traffic can originate from a VPS; supports non-standard SSH ports, remote working directories, custom executable names, and extra remote environment variables. The SSH wrapper is generated at extension load time, including resumed sessions.
+- **Tests: ignore the checked-out pi reference tree** — Exclude `pi/` from this package's TypeScript project so local reference sources do not get typechecked as part of `pi-claude-bridge`.
+- **Fix: synthetic failure notices no longer stream as assistant output (#162)** — keeps pre-output failover working for consumers like pi-model-fallback-alias; the notice text stays on the failed turn's error event.
 - **Fix: system prompt sections survive prompt capture (issue #153)** — pi 0.99.2+ adds an `mcp_servers` section through its MCP extension. The transcript replay now ranks unlisted sections after the built-ins, matching pi's builder, so the capture key matches instead of failing every turn; and recorded sections are projected to Claude Code instead of being silently dropped. The failure message points at a section-order divergence instead of blaming extension load order.
 - **Fix: duplicate AGENTS.md instructions (#151)** — Exclude Claude Code's native copy, matching the existing CLAUDE.md exclusions.
 
