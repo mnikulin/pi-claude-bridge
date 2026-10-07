@@ -177,7 +177,7 @@ if (sessionId && cwd) {
 		const sshBase = [...(port ? ["-p", port] : []), host];
 		const mkdir = spawnSync("ssh", ["-T", ...sshBase, "mkdir -p " + shellQuote(remoteDir)], { stdio: "inherit" });
 		if (mkdir.status === 0) {
-			const scp = spawnSync("scp", [...(port ? ["-P", port] : []), localSession, host + ":" + shellQuote(remoteSession)], { stdio: "inherit" });
+			const scp = spawnSync("scp", [...(port ? ["-P", port] : []), localSession, host + ":" + remoteSession], { stdio: "inherit" });
 			if (scp.status !== 0) process.exit(scp.status ?? 1);
 		} else {
 			process.exit(mkdir.status ?? 1);
