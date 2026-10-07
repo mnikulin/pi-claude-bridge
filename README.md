@@ -96,7 +96,7 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
-- `claudeCodeSsh` — run the Claude Code CLI over SSH while keeping pi local, so Claude API traffic originates from the remote host. Set `host` (required), optional `port`, optional remote `cwd`, optional remote `executable` (default `"claude"`), and optional `env` object for extra remote environment variables. When set, this takes precedence over `pathToClaudeCodeExecutable`.
+- `claudeCodeSsh` — run the Claude Code CLI over SSH while keeping pi local, so Claude API traffic originates from the remote host. Set `host` (required), optional `port`, optional remote `cwd` (defaults to pi's local cwd path), optional remote `executable` (default `"claude"`), and optional `env` object for extra remote environment variables. When set, this takes precedence over `pathToClaudeCodeExecutable`.
 
 
 **Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.

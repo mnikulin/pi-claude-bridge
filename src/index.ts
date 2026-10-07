@@ -126,7 +126,7 @@ function resolveClaudeCodeExecutable(provider: Config["provider"] = {}): string 
 
 	const host = ssh.host;
 	const port = ssh.port == null ? undefined : String(ssh.port);
-	const cwd = ssh.cwd;
+	const cwd = ssh.cwd ?? process.cwd();
 	const executable = ssh.executable ?? "claude";
 	const remoteEnv = { ...ssh.env, ...CC_CHILD_ENV };
 	const cacheKey = JSON.stringify({ host, port, cwd, executable, remoteEnv });
@@ -136,7 +136,10 @@ function resolveClaudeCodeExecutable(provider: Config["provider"] = {}): string 
 	mkdirSync(wrapperDir, { recursive: true });
 	const wrapperPath = join(wrapperDir, "claude-code-ssh-wrapper.mjs");
 	const source = `#!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 
 const host = ${JSON.stringify(host)};
 const port = ${JSON.stringify(port)};
@@ -148,13 +151,47 @@ function shellQuote(value) {
 	return "'" + String(value).replace(/'/g, "'\\\\''") + "'";
 }
 
+function claudeProjectKey(projectPath) {
+	return String(projectPath).replace(/\\//g, "-");
+}
+
+function resumeSessionId(args) {
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === "--resume" && args[i + 1]) return args[i + 1];
+		const match = /^--resume=(.+)$/.exec(args[i]);
+		if (match) return match[1];
+	}
+}
+
+const forwardedArgs = process.argv.slice(2);
+const sessionId = resumeSessionId(forwardedArgs);
+if (sessionId && cwd) {
+	const localClaudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+	const projectKey = claudeProjectKey(cwd);
+	const localSession = join(localClaudeDir, "projects", projectKey, sessionId + ".jsonl");
+	const remoteClaudeDir = remoteEnv.CLAUDE_CONFIG_DIR || ".claude";
+	const remoteBase = remoteClaudeDir.replace(/^~\\//, "");
+	const remoteDir = remoteBase.startsWith("/") ? join(remoteBase, "projects", projectKey) : remoteBase + "/projects/" + projectKey;
+	const remoteSession = remoteDir + "/" + sessionId + ".jsonl";
+	if (existsSync(localSession)) {
+		const sshBase = [...(port ? ["-p", port] : []), host];
+		const mkdir = spawnSync("ssh", ["-T", ...sshBase, "mkdir -p " + shellQuote(remoteDir)], { stdio: "inherit" });
+		if (mkdir.status === 0) {
+			const scp = spawnSync("scp", [...(port ? ["-P", port] : []), localSession, host + ":" + shellQuote(remoteSession)], { stdio: "inherit" });
+			if (scp.status !== 0) process.exit(scp.status ?? 1);
+		} else {
+			process.exit(mkdir.status ?? 1);
+		}
+	}
+}
+
 const remoteParts = [];
 if (cwd) remoteParts.push("cd", shellQuote(cwd), "&&");
 remoteParts.push("exec", "env");
 for (const [key, value] of Object.entries(remoteEnv)) {
 	if (value !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) remoteParts.push(key + "=" + shellQuote(value));
 }
-remoteParts.push(shellQuote(executable), ...process.argv.slice(2).map(shellQuote));
+remoteParts.push(shellQuote(executable), ...forwardedArgs.map(shellQuote));
 
 const sshArgs = ["-T", ...(port ? ["-p", port] : []), host, remoteParts.join(" ")];
 const child = spawn("ssh", sshArgs, { stdio: "inherit" });
@@ -173,6 +210,10 @@ child.on("error", (error) => {
 	claudeCodeSshWrapperPath = wrapperPath;
 	debug(`claude-code-ssh: wrapper=${wrapperPath} host=${host}${port ? ` port=${port}` : ""}${cwd ? ` cwd=${cwd}` : ""} executable=${executable}`);
 	return wrapperPath;
+}
+
+function claudeSessionCwd(provider: Config["provider"], localCwd: string): string {
+	return provider?.claudeCodeSsh?.cwd ?? localCwd;
 }
 
 /** Unconditional diagnostic dump — for "should never happen" paths. Creates pi's agent
@@ -1953,13 +1994,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 	queryCtx.missedSteer = false;
 
 	const cwd = process.cwd();
+	const sessionCwd = claudeSessionCwd(providerSettings, cwd);
 	// cliModel is the actual id sent to Claude Code (may carry [1m]); model.id is the
 	// pi-registered id. Log cliModel so debug lines reflect what CC actually received.
 	const cliModel = claudeCodeModelId(model, longContextSettings);
 	// Which pi session this query serves — the attribution key for history
 	// rewrites (session_compact / session_tree) and for SessionState above.
 	const piSessionId = options?.sessionId ?? null;
-	const syncResult = syncSharedSession(context.messages, cwd, customToolNameToSdk, cliModel, piSessionId);
+	const syncResult = syncSharedSession(context.messages, sessionCwd, customToolNameToSdk, cliModel, piSessionId);
 	// This query starts from the history pi has now: consume this session's
 	// armed rewrite — a sibling pi session's stays armed for its own queries.
 	if (piSessionId) historyRewrittenBySession.delete(piSessionId);
@@ -2145,7 +2187,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 			if (syncResult.preserveSharedSession) {
 				const state = sessionStateFor(queryCtx.piSessionId);
 				if (capturedSessionId && capturedSessionId !== state?.sessionId) {
-					deleteSession(capturedSessionId, cwd, process.env.CLAUDE_CONFIG_DIR);
+					deleteSession(capturedSessionId, sessionCwd, process.env.CLAUDE_CONFIG_DIR);
 					debug(`provider: query done, deleted ephemeral session ${capturedSessionId.slice(0, 8)} to preserve shared session`);
 				}
 				debug(`provider: query done, ignoring captured session ${capturedSessionId?.slice(0, 8) ?? "none"} to preserve shared session`);
@@ -2157,7 +2199,14 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 					debug(`provider: query done, session=${sessionId.slice(0, 8)}, cursor=${cursor}`);
 					// A missed steer may precede the first mirror or arrive while this
 					// query is still able to complete. Preserve both rebuild signals.
-					setSessionStateFor(queryCtx.piSessionId, { ...state, sessionId, cursor, cwd, piSessionId: queryCtx.piSessionId ?? undefined, needsRebuild: queryCtx.missedSteer || state?.needsRebuild });
+					setSessionStateFor(queryCtx.piSessionId, {
+						...state,
+						sessionId,
+						cursor,
+						cwd: sessionCwd,
+						piSessionId: queryCtx.piSessionId ?? undefined,
+						needsRebuild: queryCtx.missedSteer || state?.needsRebuild || Boolean(providerSettings.claudeCodeSsh?.host),
+					});
 				}
 			}
 
@@ -2245,6 +2294,7 @@ async function promptAndWait(
 	},
 ): Promise<{ responseText: string; stopReason: string }> {
 	const cwd = process.cwd();
+	const sessionCwd = claudeSessionCwd(providerSettings, cwd);
 	const requestedModel = options?.model ?? "opus";
 	const model = resolveModel(requestedModel);
 	const modelId = model?.id ?? requestedModel;
@@ -2261,14 +2311,14 @@ async function promptAndWait(
 	let resumeSessionId: string | null = null;
 	if (!options?.isolated && options?.context?.length) {
 		const askClaudeState = sessionStateFor(askClaudeSessionId);
-		if (askClaudeState) {
+		if (askClaudeState && !askClaudeState.needsRebuild) {
 			// Provider already has a session — just resume from it
 			// Any missed messages from other providers were already handled by the provider's Case 4
 			resumeSessionId = askClaudeState.sessionId;
 		} else {
 			// No provider session yet — create one from pi's context
 			const contextWithPrompt = [...options.context, { role: "user" as const, content: prompt, timestamp: Date.now() }];
-			const sync = syncSharedSession(contextWithPrompt as Context["messages"], cwd, undefined, cliModel, askClaudeSessionId);
+			const sync = syncSharedSession(contextWithPrompt as Context["messages"], sessionCwd, undefined, cliModel, askClaudeSessionId);
 			resumeSessionId = sync.sessionId;
 		}
 	}
