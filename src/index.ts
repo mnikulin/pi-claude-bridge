@@ -208,16 +208,10 @@ child.on("error", (error) => {
 `;
 	writeFileSync(wrapperPath, source);
 	chmodSync(wrapperPath, 0o755);
-	const executableWrapperPath = process.platform === "win32"
-		? join(wrapperDir, "claude-code-ssh-wrapper.cmd")
-		: wrapperPath;
-	if (process.platform === "win32") {
-		writeFileSync(executableWrapperPath, "@echo off\r\nnode \"%~dp0claude-code-ssh-wrapper.mjs\" %*\r\n");
-	}
 	claudeCodeSshWrapperCacheKey = cacheKey;
-	claudeCodeSshWrapperPath = executableWrapperPath;
-	debug(`claude-code-ssh: wrapper=${executableWrapperPath} host=${host}${port ? ` port=${port}` : ""} cwd=${cwd} executable=${executable}`);
-	return executableWrapperPath;
+	claudeCodeSshWrapperPath = wrapperPath;
+	debug(`claude-code-ssh: wrapper=${wrapperPath} host=${host}${port ? ` port=${port}` : ""} cwd=${cwd} executable=${executable}`);
+	return wrapperPath;
 }
 
 function claudeSessionCwd(provider: Config["provider"], localCwd: string): string {
@@ -701,6 +695,7 @@ async function runIsolatedSummary(
 				model: cliModel,
 				maxTurns: 1,
 				...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+				...(compactProviderSettings?.claudeCodeSsh?.host ? { executable: "node" as const } : {}),
 				...makeCliDebugOptions("compact-summary"),
 			},
 		});
@@ -2123,6 +2118,7 @@ function streamClaudeAgentSdk(model: Model<any>, context: Context, options?: Sim
 		...(mcpServers ? { mcpServers } : {}),
 		...(resumeSessionId ? { resume: resumeSessionId } : {}),
 		...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+		...(providerSettings.claudeCodeSsh?.host ? { executable: "node" as const } : {}),
 		...makeCliDebugOptions("provider"),
 	};
 
@@ -2390,6 +2386,7 @@ async function promptAndWait(
 			...(resumeSessionId ? { resume: resumeSessionId } : {}),
 			...(options?.isolated ? { persistSession: false } : {}),
 			...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
+			...(providerSettings.claudeCodeSsh?.host ? { executable: "node" as const } : {}),
 			...makeCliDebugOptions("askclaude"),
 		},
 	});
