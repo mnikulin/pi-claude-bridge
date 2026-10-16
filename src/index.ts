@@ -168,6 +168,7 @@ function resumeSessionId(args) {
 
 const forwardedArgs = process.argv.slice(2);
 const sessionId = resumeSessionId(forwardedArgs);
+const sshBase = ["-T", "-o", "BatchMode=yes", ...(port ? ["-p", port] : []), host];
 if (sessionId && cwd) {
 	const localClaudeDir = process.env.CLAUDE_CONFIG_DIR || localJoin(homedir(), ".claude");
 	const projectKey = claudeProjectKey(cwd);
@@ -177,12 +178,12 @@ if (sessionId && cwd) {
 	const remoteDir = posix.join(remoteBase, "projects", projectKey);
 	const remoteSession = posix.join(remoteDir, sessionId + ".jsonl");
 	if (existsSync(localSession)) {
-		const sshBase = [...(port ? ["-p", port] : []), host];
 		const upload = spawnSync(
 			"ssh",
-			["-T", ...sshBase, "mkdir -p " + shellQuote(remoteDir) + " && cat > " + shellQuote(remoteSession)],
+			[...sshBase, "mkdir -p " + shellQuote(remoteDir) + " && cat > " + shellQuote(remoteSession)],
 			{ input: readFileSync(localSession), stdio: ["pipe", "inherit", "inherit"] },
 		);
+		if (upload.error) console.error("SSH session upload failed:", upload.error.message);
 		if (upload.status !== 0) process.exit(upload.status ?? 1);
 	}
 }
@@ -195,7 +196,7 @@ for (const [key, value] of Object.entries(remoteEnv)) {
 }
 remoteParts.push(shellQuote(executable), ...forwardedArgs.map(shellQuote));
 
-const sshArgs = ["-T", ...(port ? ["-p", port] : []), host, remoteParts.join(" ")];
+const sshArgs = [...sshBase, remoteParts.join(" ")];
 const child = spawn("ssh", sshArgs, { stdio: "inherit" });
 child.on("exit", (code, signal) => {
 	if (signal) process.kill(process.pid, signal);

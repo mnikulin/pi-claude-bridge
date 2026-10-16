@@ -96,7 +96,38 @@ Config: `~/.pi/agent/claude-bridge.json` (global) or the project Pi config direc
 - `strictMcpConfig` — block MCP servers from `~/.claude.json` / `.mcp.json` (default `true`). Cloud MCP (Gmail/Drive via claude.ai OAuth) is always blocked.
 - `autoMemoryEnabled` — enable Claude Code's auto-memory system (default `false`)
 - `pathToClaudeCodeExecutable` — path to the `claude` binary. Useful if your OS/filesystem has the SDK's bundled musl/glibc binaries in a place where they can't run. For example, with Nix you can set the binary to e.g. `"/home/you/.nix-profile/bin/claude"`.
-- `claudeCodeSsh` — run the Claude Code CLI over SSH while keeping pi local, so Claude API traffic originates from the remote host. Set `host` (required), optional `port`, optional remote `cwd` (defaults to pi's local cwd path on POSIX; required on Windows), optional remote `executable` (default `"claude"`), and optional `env` object for extra remote environment variables. When set, this takes precedence over `pathToClaudeCodeExecutable`. On Windows, `ssh.exe` and `node.exe` must be available in `PATH`.
+- `claudeCodeSsh` — run the Claude Code CLI over SSH while keeping pi local, so Claude API traffic originates from the remote host. Set `host` (required), optional `port`, optional remote `cwd` (defaults to pi's local cwd path on POSIX; required on Windows), optional remote `executable` (default `"claude"`), and optional `env` object for extra remote environment variables. When set, this takes precedence over `pathToClaudeCodeExecutable`. On Windows, `ssh.exe` and `node.exe` must be available in `PATH`. See [OpenSSH setup](#openssh-setup).
+
+### OpenSSH setup
+
+The bridge runs the `ssh` executable from `PATH`. It does not read PuTTY sessions or `.ppk` keys. Put the connection details in `~/.ssh/config` (on Windows, `%USERPROFILE%\.ssh\config`):
+
+```sshconfig
+Host claude-vps
+    HostName example.com
+    User you
+    Port 2222
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+```
+
+Then set `provider.claudeCodeSsh` in `~/.pi/agent/claude-bridge.json` (on Windows, `%USERPROFILE%\.pi\agent\claude-bridge.json`):
+
+```json
+{
+  "provider": {
+    "claudeCodeSsh": {
+      "host": "claude-vps",
+      "cwd": "/home/you/project",
+      "executable": "/home/you/.local/bin/claude"
+    }
+  }
+}
+```
+
+`host` is the OpenSSH profile name. Leave `claudeCodeSsh.port` unset to use the profile's `Port`; an explicit `port` overrides it. `cwd` and `executable` are paths on the VPS, not on the local machine.
+
+Check the connection outside pi first: `ssh claude-vps` accepts the host key on first use; then `ssh -o BatchMode=yes -T claude-vps 'cd /home/you/project && /home/you/.local/bin/claude --version'` must complete without a password or key-passphrase prompt. The bridge uses `BatchMode=yes` for both Claude Code and transcript uploads, so authentication failures surface as errors instead of leaving pi at `working`. Load passphrase-protected keys into OpenSSH `ssh-agent` before starting pi. On Windows, a PuTTY `.ppk` key must first be exported in OpenSSH format with PuTTYgen.
 
 
 **Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.
