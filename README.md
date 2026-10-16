@@ -127,7 +127,19 @@ Then set `provider.claudeCodeSsh` in `~/.pi/agent/claude-bridge.json` (on Window
 
 `host` is the OpenSSH profile name. Leave `claudeCodeSsh.port` unset to use the profile's `Port`; an explicit `port` overrides it. `cwd` and `executable` are paths on the VPS, not on the local machine.
 
-Check the connection outside pi first: `ssh claude-vps` accepts the host key on first use; then `ssh -o BatchMode=yes -T claude-vps 'cd /home/you/project && /home/you/.local/bin/claude --version'` must complete without a password or key-passphrase prompt. The bridge uses `BatchMode=yes` for both Claude Code and transcript uploads, so authentication failures surface as errors instead of leaving pi at `working`. Load passphrase-protected keys into OpenSSH `ssh-agent` before starting pi. On Windows, a PuTTY `.ppk` key must first be exported in OpenSSH format with PuTTYgen.
+Before starting pi, connect once from the same local account that runs pi:
+
+```sh
+ssh -T claude-vps 'echo connected'
+```
+
+On the first connection, OpenSSH shows the VPS host-key fingerprint. Verify it against the VPS, then type `yes`; OpenSSH records the trusted host in `~/.ssh/known_hosts` (on Windows, `%USERPROFILE%\.ssh\known_hosts`). PuTTY's trusted-host list is separate and does not count for OpenSSH. Then verify the non-interactive connection used by the bridge:
+
+```sh
+ssh -o BatchMode=yes -T claude-vps 'cd /home/you/project && /home/you/.local/bin/claude --version'
+```
+
+This must complete without a password or key-passphrase prompt. The bridge uses `BatchMode=yes` for both Claude Code and transcript uploads, so authentication failures surface as errors instead of leaving pi at `working`. Load passphrase-protected keys into OpenSSH `ssh-agent` before starting pi. On Windows, export a PuTTY `.ppk` private key from PuTTYgen in OpenSSH private-key format before using it as `IdentityFile`; otherwise `ssh` reports `invalid format`. Trusting the VPS host key and converting your private key are separate steps.
 
 
 **Startup notice:** the first session lists `provider.plan` and `askClaude.enabled` if unset, then records `startupNoticeShown` in the global config so it doesn't nag again.
